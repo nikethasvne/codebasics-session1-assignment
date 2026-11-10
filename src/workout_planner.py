@@ -1,69 +1,134 @@
+import json
 import os
 
 from dotenv import load_dotenv
 import streamlit as st
-from groq import Groq
-
+from groq import AuthenticationError,Groq
+import logging
+import re
 
 load_dotenv()
 
-st.write("Welcome to the Workout Planner!")
-name = st.text_input("Enter your name")
-age = st.number_input("Enter your age")
-weight = st.number_input("Enter your weight")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-height = st.text_input("Enter your height in feet and inches")
-
-
-gender = st.selectbox("Select your gender", ["Male", "Female"])
-activity_level = st.selectbox("Select your activity level", ["Sedentary", "Lightly active", "Moderately active", "Very active"])
-goal = st.selectbox("Select your goal", ["Build muscle", "Lose fat", "General fitness", "Improve endurance"])
-time_frame = st.selectbox("Select your time frame", ["1 week", "2 weeks", "3 weeks", "4 weeks"])
-equipment = st.selectbox("Select your equipment", ["No equipment", "Home dumbbells", "Full gym"])
-location = st.selectbox("Select your location", ["Home", "Gym"])
-days_available = st.slider("Select the number of days you are available to workout", 1, 7, 3)   
-#instead of using st.selectbox, use st.multiselect for equipment_access
-#equipment_access = st.multiselect("Select your equipment access", ["No equipment", "Home dumbbells", "Full gym"])   
-injuries_or_limitations = st.text_input("Enter your injuries or limitations")
-
-#print the name and age
-#comment out the print statements
-#st.write(f"Hello, {name}! You are {age} years old.")
-#st.write(f"You are {weight} pounds and {height} inches tall.")
-#st.write(f"You are {gender} and your activity level is {activity_level}.")
-#st.write(f"Your goal is {goal} and your time frame is {time_frame}.")
-#st.write(f"You are using {equipment} and your location is {location}.")
-#st.write(f"You are available to workout {days_available} days a week.")
-#st.write(f"You have access to {equipment_access}.")
-#st.write(f"You have {injuries_or_limitations}.")
-
-#generate the input for the groq api
-input = f"Generate a workout plan for {name} who is {age} years old, {weight} pounds, {height} inches tall, {gender}, {activity_level}, {goal}, {time_frame}, {equipment}, {location}, {days_available}, {injuries_or_limitations}"
-
-def generate_workout_plan(name, age, weight, height, gender, activity_level, goal, time_frame, equipment, location, days_available, injuries_or_limitations):
+def generate_workout_plan(profile_json):
     #call the groq api to generate a workout plan
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise Exception("Missing GROQ_API_KEY in environment")
+        logger.error("Missing GROQ_API_KEY in environment")
+        st.write("Sorry, something went wrong. Please try again later.")
+        return None
 
     client = Groq()
     model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
-    completion = client.chat.completions.create(
-        model=model,
+    try:
         messages=[
-            {"role": "system", "content": "You are a workout planner."},
-            {"role": "user", "content": input},
-        ],
-        temperature=0.8,
-        max_tokens=5000,
-    )
+                {"role": "system", "content": "You are a workout planner. Generate a practical workout plan from the user's JSON profile. Respect their injuries, equipment, location, experience, goal, and days available."},
+                {"role": "user", "content": profile_json},
+        ]
+        st.write(messages)
+        completion = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.8,
+            max_tokens=5000,
+        )
+    except AuthenticationError as e:
+        st.write("Sorry, something went wrong. Please try again later.")
+        logger.error(f"Invalid API Key: {e}")
+        return None
 
     workout_plan = completion.choices[0].message.content
     if not workout_plan:
-        raise Exception("No workout plan generated")
-
+        logger.error("No workout plan generated")
+        st.write("Sorry, something went wrong. Please try again later.")
+        return None
     return workout_plan.strip()
 
-if st.button("Generate Workout Plan"):
-    st.write(generate_workout_plan(name, age, weight, height, gender, activity_level, goal, time_frame, equipment, location, days_available, injuries_or_limitations))
+def display_workout_planner():
+    st.set_page_config(layout="wide")
+    st.markdown("**Welcome to the Workout Planner!**")
+
+    # Intake form for the user to fill out
+    left, right = st.columns(2)
+    with left:
+        name = st.text_input("Enter your name")
+        age = st.number_input("Enter your age")
+        weight = st.number_input("Enter your weight")
+        height = st.text_input("Enter your height in feet and inches", value="5'10\"")
+        gender = st.selectbox("Select your gender", ["Male", "Female"])
+        fitness_goal = st.selectbox("Select your fitness goal", ["Build muscle", "Lose fat", "General fitness", "Improve endurance"])
+        experience_level = st.selectbox("Select your training experience", ["Beginner", "Intermediate", "Advanced"])
+        activity_level = st.selectbox("Select your activity level", ["Sedentary", "Lightly active", "Moderately active", "Very active"])
+        time_frame = st.selectbox("Select your time frame", ["1 week", "2 weeks", "3 weeks", "4 weeks"])
+        location = st.selectbox("Select your location", ["Home", "Gym"])
+        days_available = st.slider("Select the number of days available weekly to workout", 1, 7, 3)
+        equipment_access = st.multiselect("Select your equipment access", ["No equipment", "Home dumbbells", "Full gym"])   
+        injuries = st.multiselect("Enter your injuries or limitations", ["None", "bad knees", "backpain"])
+        pressed = st.button("Generate Workout Plan")
+
+    # --- Validation Checks ---
+    errors = validate_inputs(name, age, weight, equipment_access, injuries)
+
+    profile = {
+        "name": name,
+        "age": int(age),
+        "weight": weight,
+        "height": height,
+        "gender": gender,
+        "activity_level": activity_level,
+        "experience_level": experience_level,
+        "fitness_goal": fitness_goal,
+        "time_frame": time_frame,
+        "equipment_access": equipment_access,
+        "location": location,
+        "days_available": int(days_available),
+        "injuries": injuries,
+    }
+    profile_json = json.dumps(profile)
+
+    if pressed:
+        with right:
+            if errors:
+                for err in errors:
+                    st.error(err)
+            else:
+                plan = generate_workout_plan(profile_json)
+                if plan:
+                    st.write(f"<div style='border: 1px solid black; padding: 10px;'>{plan}</div>", unsafe_allow_html=True)
+                else:
+                    st.write("Sorry, something went wrong. Please try again later.")
+
+def validate_inputs(name, age, weight, equipment_access, injuries):
+    errors = []
+    
+    # Check name
+    # Check if name is empty/whitespace
+    if not name or not name.strip():
+        errors.append("Please enter a valid name.")
+    # Check if the name starts with an alphabet letter (A-Z or a-z)
+    elif not re.match(r"^[A-Za-z]", name.strip()):
+        errors.append("Name must start with an alphabet letter (cannot start with a number, space, or special character).")
+
+    # Check age
+    if age <= 0 or age > 120:
+        errors.append("Please enter a realistic age between 1 and 120.")
+        
+    # Check weight
+    if weight <= 0 or weight > 500:
+        errors.append("Weight must be between 1 and 500 pounds.")
+
+    # Check if equipment_access is empty/whitespace
+    if not equipment_access:
+        errors.append("Equipment access is required.")
+    
+    # Check if injuries is empty/whitespace
+    if not injuries:
+        errors.append("Provide your injuries or mention none")
+        
+    return errors
+
+if __name__ == "__main__":
+    display_workout_planner()
